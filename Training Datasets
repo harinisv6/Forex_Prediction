@@ -1,0 +1,126 @@
+#COMPLETE FOREX MULTI-PAIR TRAINING
+
+import pandas as pd
+import numpy as np
+import torch
+import joblib
+import glob
+import os
+
+from lightning.pytorch import Trainer
+from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer
+from pytorch_forecasting.metrics import QuantileLoss
+from pytorch_forecasting.data import GroupNormalizer
+from xgboost import XGBRegressor
+
+# 1️⃣ LOAD ALL DATASETS
+
+def load_all_data(folder_path="data"):
+    csv_files = glob.glob(os.path.join(folder_path, "*.csv"))
+
+    if len(csv_files) == 0:
+        raise Exception("❌ No CSV files found inside 'data' folder")
+
+    all_data = []
+    for file in csv_files:
+        print(f"Loading {file}")
+        df = pd.read_csv(file)
+        df.columns = df.columns.str.strip().str.lower()
+
+        # Required columns check
+        required_cols = ["time", "open", "high", "low", "close", "volume"]
+        for col in required_cols:
+            if col not in df.columns:
+                raise Exception(f"❌ Column '{col}' missing in {file}")
+        df["time"] = pd.to_datetime(df["time"], errors="coerce")
+        df = df.dropna(subset=["time"])
+        df = df.sort_values("time")
+
+        # Add pair name from filename
+        pair_name = os.path.basename(file).replace(".csv", "")
+        df["pair"] = pair_name
+        all_data.append(df)
+    df = pd.concat(all_data).reset_index(drop=True)
+    return df
+df = load_all_data("data")
+print("Total combined rows:", len(df))
+
+# 2️⃣ CREATE TARGETS
+# Assuming 1-minute data
+
+df["target_1h"] = df.groupby("pair")["close"].shift(-60)
+df["target_1d"] = df.groupby("pair")["close"].shift(-1440)
+
+df = df.dropna()
+
+print("After target creation:", len(df))
+
+# 3️⃣ CREATE TIME INDEX PER PAIR
+
+df["time_idx"] = df.groupby("pair").cumcount()
+
+# 4️⃣ TRAIN TFT (1 HOUR MODEL)
+
+print("\n🔥 Training TFT (1H prediction)...")
+
+max_encoder_length = 60
+max_prediction_length = 1
+
+training = TimeSeriesDataSet(
+    df,
+    time_idx="time_idx",
+    target="target_1h",
+    group_ids=["pair"],
+    max_encoder_length=max_encoder_length,
+    max_prediction_length=max_prediction_length,
+    time_varying_unknown_reals=["open", "high", "low", "close", "volume"],
+    target_normalizer=GroupNormalizer(groups=["pair"]),
+)
+
+train_loader = training.to_dataloader(train=True, batch_size=64, num_workers=0)
+
+tft = TemporalFusionTransformer.from_dataset(
+    training,
+    learning_rate=0.001,
+    hidden_size=16,
+    attention_head_size=2,
+    dropout=0.1,
+    loss=QuantileLoss(),
+)
+
+trainer = Trainer(
+    max_epochs=10,
+    accelerator="cpu",
+    enable_checkpointing=False
+)
+
+trainer.fit(tft, train_loader)
+
+torch.save(tft.state_dict(), "tft_1h_all_pairs.ckpt")
+
+print("✅ TFT model saved as tft_1h_all_pairs.ckpt")
+
+# 5️⃣ TRAIN XGBOOST (1 DAY MODEL)
+
+print("\n🔥 Training XGBoost (1D prediction)...")
+features = ["open", "high", "low", "close", "volume"]
+
+X = df[features]
+y = df["target_1d"]
+
+model_xgb = XGBRegressor(
+    n_estimators=500,
+    learning_rate=0.05,
+    max_depth=6,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42
+)
+
+model_xgb.fit(X, y)
+
+joblib.dump(model_xgb, "models/xgb_1d_all_pairs.pkl")
+
+print("✅ XGBoost model saved as xgb_1d_all_pairs.pkl")
+
+print("\n🎉 ALL MODELS TRAINED SUCCESSFULLY!")

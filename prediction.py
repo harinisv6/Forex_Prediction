@@ -5,7 +5,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import MetaTrader5 as mt5
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import pytz
@@ -28,7 +27,6 @@ if not st.session_state.login:
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        # ANY input logs in successfully
         st.session_state.login = True
         st.success(f"Login Successful! Welcome, {username}")
         st.rerun()
@@ -44,19 +42,20 @@ pairs = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
 selected_pair = st.sidebar.selectbox("Select Pair", pairs)
 
 # ---------------------------
-# MT5 CONNECT
+# SIMULATED DATA FUNCTION
 # ---------------------------
-if not mt5.initialize():
-    st.error("MT5 Initialization Failed")
-    st.stop()
-
-# ---------------------------
-# GET DATA FUNCTION
-# ---------------------------
-def get_data(symbol, timeframe, bars=200):
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
-    df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
+def get_data(symbol, timeframe='H1', bars=30):
+    """Simulate OHLC data"""
+    np.random.seed(42)  # reproducible
+    base_price = 1.1 + np.random.rand() * 0.5
+    timestamps = pd.date_range(end=datetime.now(), periods=bars, freq='H' if timeframe=='H1' else 'D')
+    df = pd.DataFrame({
+        'time': timestamps,
+        'open': base_price + np.random.randn(bars)*0.001,
+        'high': base_price + np.random.randn(bars)*0.002,
+        'low': base_price - np.random.randn(bars)*0.002,
+        'close': base_price + np.random.randn(bars)*0.001,
+    })
     return df
 
 # ---------------------------
@@ -73,7 +72,6 @@ future_1d_time = now_ist + timedelta(days=1)
 
 # ---------------------------
 # DUMMY PREDICTION LOGIC
-# (Replace with your TFT/XGB model)
 # ---------------------------
 def predict_next_price(df):
     last_price = df['close'].iloc[-1]
@@ -85,8 +83,7 @@ def predict_next_price(df):
 # ---------------------------
 st.subheader("📈 1 Hour Prediction")
 
-df_1h = get_data(selected_pair, mt5.TIMEFRAME_H1, bars=30)
-df_1h['time'] = df_1h['time'].dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata')
+df_1h = get_data(selected_pair, 'H1', bars=30)
 last_candle = df_1h.iloc[-1]
 
 pred_close = predict_next_price(df_1h)
@@ -125,7 +122,7 @@ st.plotly_chart(fig1, use_container_width=True)
 # ---------------------------
 st.subheader("📊 1 Day Prediction")
 
-df_1d = get_data(selected_pair, mt5.TIMEFRAME_D1)
+df_1d = get_data(selected_pair, 'D1', bars=30)
 last_price = df_1d['close'].iloc[-1]
 pred_1d = predict_next_price(df_1d)
 
@@ -163,7 +160,7 @@ st.sidebar.subheader("📢 Signals Comparison")
 signals = {}
 
 for pair in pairs:
-    df_temp = get_data(pair, mt5.TIMEFRAME_H1)
+    df_temp = get_data(pair, 'H1', bars=30)
     pred_temp = predict_next_price(df_temp)
     last_price = df_temp['close'].iloc[-1]
 
@@ -176,8 +173,3 @@ for pair in pairs:
 
 for pair, signal in signals.items():
     st.sidebar.write(f"{pair} → {signal}")
-
-# ---------------------------
-# SHUTDOWN MT5
-# ---------------------------
-mt5.shutdown()
